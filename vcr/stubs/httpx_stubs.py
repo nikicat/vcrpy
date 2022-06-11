@@ -76,7 +76,7 @@ def _make_vcr_request(httpx_request, **kwargs):
 
 
 def _shared_vcr_send(cassette, real_send, *args, **kwargs):
-    real_request = args[1]
+    real_request = kwargs.get("request") or args[1]
 
     vcr_request = _make_vcr_request(real_request, **kwargs)
 
@@ -140,6 +140,7 @@ async def _async_vcr_send(cassette, real_send, *args, **kwargs):
         return response
 
     real_response = await real_send(*args, **kwargs)
+    await real_response.aread()
     return _record_responses(cassette, vcr_request, real_response)
 
 
