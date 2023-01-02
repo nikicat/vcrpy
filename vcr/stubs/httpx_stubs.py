@@ -140,6 +140,8 @@ async def _async_vcr_send(cassette, real_send, *args, **kwargs):
         return response
 
     real_response = await real_send(*args, **kwargs)
+    if cassette.filter_request(vcr_request) is None:
+        return real_response
     await real_response.aread()
     return _record_responses(cassette, vcr_request, real_response)
 
