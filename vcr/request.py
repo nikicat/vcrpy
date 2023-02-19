@@ -3,6 +3,7 @@ from io import BytesIO
 from urllib.parse import urlparse, parse_qsl
 from .util import CaseInsensitiveDict
 import logging
+from typing import BinaryIO
 
 log = logging.getLogger(__name__)
 
@@ -12,7 +13,7 @@ class Request:
     VCR's representation of a request.
     """
 
-    def __init__(self, method, uri, body, headers):
+    def __init__(self, method: str, uri: str, body: BinaryIO | bytes, headers):
         self.method = method
         self.uri = uri
         self._was_file = hasattr(body, "read")
@@ -34,13 +35,13 @@ class Request:
         self._headers = value
 
     @property
-    def body(self):
+    def body(self) -> BinaryIO:
         return BytesIO(self._body) if self._was_file else self._body
 
     @body.setter
-    def body(self, value):
+    def body(self, value: str | bytes):
         if isinstance(value, str):
-            value = value.encode("utf-8")
+            value: bytes = value.encode("utf-8")
         self._body = value
 
     def add_header(self, key, value):
