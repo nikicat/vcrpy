@@ -32,12 +32,13 @@ def _transform_headers(httpx_response):
     return out
 
 
-def _to_serialized_response(httpx_response):
+def _to_serialized_response(httpx_response) -> dict:
+    content: str = httpx_response.content.decode("utf-8", "ignore")
     return {
         "status_code": httpx_response.status_code,
         "http_version": httpx_response.http_version,
         "headers": _transform_headers(httpx_response),
-        "content": httpx_response.content.decode("utf-8", "ignore"),
+        "content": content,
     }
 
 
@@ -55,7 +56,7 @@ def _from_serialized_headers(headers):
 
 @patch("httpx.Response.close", MagicMock())
 @patch("httpx.Response.read", MagicMock())
-def _from_serialized_response(request, serialized_response, history=None):
+def _from_serialized_response(request, serialized_response: dict, history=None):
     content = serialized_response.get("content").encode()
     response = httpx.Response(
         status_code=serialized_response.get("status_code"),
@@ -90,18 +91,19 @@ def _shared_vcr_send(cassette, real_send, *args, **kwargs):
     return vcr_request, None
 
 
-def _record_responses(cassette, vcr_request, real_response):
+def _record_responses(cassette, track, vcr_request, real_response):
     for past_real_response in real_response.history:
         past_vcr_request = _make_vcr_request(past_real_response.request)
-        cassette.append(past_vcr_request, _to_serialized_response(past_real_response))
+        cassette.record(track, past_vcr_request, _to_serialized_response(past_real_response))
+        # HACK: only 100 redirects could be here...
+        track += .01
 
     if real_response.history:
         # If there was a redirection keep we want the request which will hold the
         # final redirect value
         vcr_request = _make_vcr_request(real_response.request)
 
-    cassette.append(vcr_request, _to_serialized_response(real_response))
-    return real_response
+    cassette.record(track, vcr_request, _to_serialized_response(real_response))
 
 
 def _play_responses(cassette, request, vcr_request, client, kwargs):
@@ -139,11 +141,32 @@ async def _async_vcr_send(cassette, real_send, *args, **kwargs):
         args[0].cookies.extract_cookies(response)
         return response
 
+    track = cassette.forward()
     real_response = await real_send(*args, **kwargs)
     if cassette.filter_request(vcr_request) is None:
         return real_response
-    await real_response.aread()
-    return _record_responses(cassette, vcr_request, real_response)
+    if real_response.is_stream_consumed:
+        _record_responses(cassette, track, vcr_request, real_response)
+        return real_response
+
+    real_aiter_text = real_response.aiter_text
+    real_aclose = real_response.aclose
+    chunks = []
+
+    async def patched_aiter_text(chunk_size: int | None = None):
+        async for chunk in real_aiter_text(chunk_size):
+            chunks.append(chunk)
+            yield chunk
+
+    async def patched_aclose():
+        if not real_response.is_closed:
+            real_response._content = ''.join(chunks).encode()
+            _record_responses(cassette, track, vcr_request, real_response)
+        return await real_aclose()
+
+    real_response.aiter_text = patched_aiter_text
+    real_response.aclose = patched_aclose
+    return real_response
 
 
 def async_vcr_send(cassette, real_send):
@@ -161,8 +184,33 @@ def _sync_vcr_send(cassette, real_send, *args, **kwargs):
         args[0].cookies.extract_cookies(response)
         return response
 
+    track = cassette.forward()
     real_response = real_send(*args, **kwargs)
-    return _record_responses(cassette, vcr_request, real_response)
+    if cassette.filter_request(vcr_request) is None:
+        return real_response
+    if real_response.is_stream_consumed:
+        _record_responses(cassette, track, vcr_request, real_response)
+        return real_response
+
+    real_iter_text = real_response.iter_text
+    real_close = real_response.close
+    chunks = []
+
+    def patched_iter_text(chunk_size: int | None = None):
+        for chunk in real_iter_text(chunk_size):
+            chunks.append(chunk)
+            yield chunk
+
+    def patched_close():
+        if not real_response.is_closed:
+            real_response._content = ''.join(chunks).encode()
+            _record_responses(cassette, track, vcr_request, real_response)
+        return real_close()
+
+    real_response.iter_text = patched_iter_text
+    real_response.close = patched_close
+
+    return real_response
 
 
 def sync_vcr_send(cassette, real_send):

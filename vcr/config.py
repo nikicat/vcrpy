@@ -150,6 +150,7 @@ class VCR:
             "path_transformer": path_transformer,
             "func_path_generator": func_path_generator,
             "allow_playback_repeats": kwargs.get("allow_playback_repeats", False),
+            "sequential": kwargs.get("sequential", False),
         }
         path = kwargs.get("path")
         if path:

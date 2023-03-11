@@ -297,3 +297,37 @@ def test_redirect_wo_allow_redirects(do_request, yml):
         assert response.status_code == 308
 
         assert cassette.play_count == 1
+
+
+async def async_stream():
+    url = "https://httpbin.org/stream/3"
+
+    async with httpx.AsyncClient() as client:
+        async with client.stream("GET", url) as response:
+            assert response.status_code == 200
+            chunks = 0
+            async for chunk in response.aiter_lines():
+                chunks += 1
+            assert chunks == 3
+
+
+async def sync_stream():
+    url = "https://httpbin.org/stream/3"
+
+    with httpx.Client() as client:
+        with client.stream("GET", url) as response:
+            assert response.status_code == 200
+            chunks = 0
+            for chunk in response.iter_lines():
+                chunks += 1
+            assert chunks == 3
+
+
+@pytest.mark.parametrize('stream_func', [async_stream, sync_stream])
+async def test_stream(yml, stream_func):
+    with vcr.use_cassette(yml):
+        await stream_func()
+
+    with vcr.use_cassette(yml) as cassette:
+        await stream_func()
+        assert cassette.play_count == 1

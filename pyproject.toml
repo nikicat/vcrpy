@@ -1,2 +1,5 @@
 [tool.black]
 line-length=110
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"

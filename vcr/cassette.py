@@ -183,6 +183,7 @@ class Cassette:
         custom_patches=(),
         inject=False,
         allow_playback_repeats=False,
+        sequential=False,
     ):
         self._persister = persister or FilesystemPersister
         self._path = path
@@ -196,11 +197,14 @@ class Cassette:
         self.custom_patches = custom_patches
         self.allow_playback_repeats = allow_playback_repeats
 
-        # self.data is the list of (req, resp) tuples
+        # self.data is the list of (track, req, resp) tuples
         self.data = []
         self.play_counts = collections.Counter()
         self.dirty = False
         self.rewound = False
+        self.current: int = 0
+        self.sequential = sequential
+        self.track: int = 0
 
     @property
     def play_count(self):
@@ -213,19 +217,26 @@ class Cassette:
 
     @property
     def requests(self):
-        return [request for (request, response) in self.data]
+        return [request for (track, request, response) in sorted(self.data)]
 
     @property
     def responses(self):
-        return [response for (request, response) in self.data]
+        return [response for (track, request, response) in sorted(self.data)]
 
     @property
     def write_protected(self):
         return self.rewound and self.record_mode == RecordMode.ONCE or self.record_mode == RecordMode.NONE
 
-    def append(self, request, response):
+    def append(self, request: dict, response: dict):
         """Add a request, response pair to this cassette"""
         log.info("Appending request %s and response %s", request, response)
+        self.record(self.forward(), request, response)
+
+    def forward(self) -> int:
+        self.track += 1
+        return self.track
+
+    def record(self, track: float, request: dict, response: dict):
         request = self._before_record_request(request)
         if not request:
             return
@@ -235,7 +246,7 @@ class Cassette:
         response = self._before_record_response(response)
         if response is None:
             return
-        self.data.append((request, response))
+        self.data.append((track, request, response))
         self.dirty = True
 
     def filter_request(self, request):
@@ -247,19 +258,34 @@ class Cassette:
         the request.
         """
         request = self._before_record_request(request)
-        for index, (stored_request, response) in enumerate(self.data):
+        for index, (track, stored_request, response) in enumerate(self.data):
             if requests_match(request, stored_request, self._match_on):
                 yield index, response
 
-    def can_play_response_for(self, request):
+    def can_play_response_for(self, request) -> bool:
         request = self._before_record_request(request)
-        return request and request in self and self.record_mode != RecordMode.ALL and self.rewound
+        if request is None or self.record_mode == RecordMode.ALL or not self.rewound:
+            return False
+        if self.sequential:
+            track, stored_request, response = self.data[self.current]
+            return requests_match(request, stored_request, self._match_on)
+        else:
+            return request in self
 
     def play_response(self, request):
         """
         Get the response corresponding to a request, but only if it
         hasn't been played back before, and mark it as played
         """
+        request = self._before_record_request(request)
+        if self.sequential:
+            track, stored_request, response = self.data[self.current]
+            if requests_match(request, stored_request, self._match_on):
+                self.current += 1
+                return response
+            else:
+                raise UnhandledHTTPRequestError("No match for request in sequential mode")
+
         for index, response in self._responses(request):
             if self.play_counts[index] == 0 or self.allow_playback_repeats:
                 self.play_counts[index] += 1
@@ -300,7 +326,7 @@ class Cassette:
         """
         best_matches = []
         request = self._before_record_request(request)
-        for index, (stored_request, response) in enumerate(self.data):
+        for index, (track, stored_request, response) in enumerate(self.data):
             successes, fails = get_matchers_results(request, stored_request, self._match_on)
             best_matches.append((len(successes), stored_request, successes, fails))
         best_matches.sort(key=lambda t: t[0], reverse=True)
@@ -335,7 +361,7 @@ class Cassette:
         try:
             requests, responses = self._persister.load_cassette(self._path, serializer=self._serializer)
             for request, response in zip(requests, responses):
-                self.append(request, response)
+                self.data.append((self.forward(), request, response))
             self.dirty = False
             self.rewound = True
         except ValueError:
